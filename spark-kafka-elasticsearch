@@ -1,0 +1,133 @@
+from pyspark import SparkContext, SparkConf
+from pyspark.sql import SparkSession, types
+import pyspark.sql.functions as f
+
+import os
+
+os.environ['PYSPARK_SUBMIT_ARGS'] = '--packages org.apache.spark:spark-sql-kafka-0-10_2.11:2.4.5 pyspark-shell'
+
+
+def getSchema():
+    schema = types.StructType([
+        types.StructField('card', types.LongType()),
+        types.StructField('retailer', types.StringType()),
+        types.StructField('pin', types.IntegerType()),
+        types.StructField('distance', types.LongType()),
+        types.StructField('amount', types.DoubleType()),
+        types.StructField('key', types.DoubleType()),
+        types.StructField('timestamp', types.LongType()),
+    ])
+    return schema;
+
+
+conf = SparkConf().set("spark.jars", "/home/impadmin/Downloads/elasticsearch-spark-20_2.11-7.6.0.jar")
+sc = SparkContext(conf=conf)
+spark = SparkSession \
+    .builder \
+    .appName("frauddetect") \
+    .getOrCreate()
+spark.conf.set("spark.sql.shuffle.partitions", 10)
+lines = spark \
+    .readStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", "localhost:9092") \
+    .option("subscribe", "faultdetection") \
+    .load()
+print("start")
+lines.printSchema()
+print("done")
+
+# lines = lines.select("value")
+# lines = lines.selectExpr("CAST(value AS STRING)")
+# words = lines.select(f.split(lines.value,",")).rdd.flatMap(
+#              lambda x: x).toDF(getSchema())
+
+df = lines.select('timestamp',
+                  f.expr("(split(value, ','))[0]").cast("long").alias("card"),
+                  f.expr("(split(value, ','))[1]").cast("string").alias("merchant"),
+                  f.expr("(split(value, ','))[2]").cast("int").alias("pin"),
+                  f.expr("(split(value, ','))[3]").cast("int").alias("distnance"),
+                  f.expr("(split(value, ','))[4]").cast("double").alias("amount"),
+                  f.expr("(split(value, ','))[5]").cast("string").alias("key"),
+                  f.expr("(split(value, ','))[6]").cast("long").alias("d_timestamp"))
+# colList = ["card", "merchant", "pin"]
+# ranked = df.withColumn(
+#     "rank", f.dense_rank().over(Window.partitionBy([f.col(x) for x in colList]).orderBy(f.desc("d_timestamp"))))
+
+df.printSchema()
+# windowedCounts = df.groupBy(
+#     f.window(df.timestamp, "120 minutes", "30 minutes"),
+#     df.card, df.merchant
+# ).count()
+
+windowedCounts = df \
+    .groupBy(
+        f.window(df.timestamp, "60 minutes", "10 minutes"),
+        df.card, df.merchant ) \
+    .count()
+#windowedCounts = windowedCounts.filter("count > 1").select("window", "card","merchant")
+
+
+windowedCounts = windowedCounts.withColumn("fraud_trans", f.lit(1).cast("boolean"))
+windowedCounts = windowedCounts.withColumn("notification", f.lit(0).cast("boolean"))
+
+
+# sendNotification(windowedCounts.select("card"));
+
+# data = spark.createDataFrame(lines, getSchema())
+# card no. customer, merchant
+# words = lines.select(
+#    explode(
+#        split(lines.value, ",")
+#    ).alias("word")
+# )
+
+
+# Generate running word count
+# wordCounts = words.groupBy("word").count()
+
+# query = windowedCounts \
+#     .writeStream \
+#     .outputMode("complete") \
+#     .format("console") \
+#     .option("truncate", "false") \
+#     .start()
+# query.awaitTermination()
+#
+
+def sendNotification(row):
+    print(str(row.card) + " " + row.merchant)
+
+
+
+# query = windowedCounts \
+#     .writeStream \
+#     .foreach(sendNotification) \
+#     .outputMode("complete").start()
+
+query = windowedCounts \
+    .writeStream \
+    .outputMode("update") \
+    .format("console") \
+    .option("truncate", "false") \
+    .start()
+
+query.awaitTermination()
+
+# windowedCounts \
+#     .writeStream \
+#     .outputMode("complete") \
+#     .format("org.elasticsearch.spark.sql") \
+#     .option("es.nodes", 'localhost') \
+#     .option("es.port", 9200) \
+#     .option("checkpointLocation", "/home/impadmin/Software/data") \
+#     .start("index/type").awaitTermination()
+
+# windowedCounts \
+#     .writeStream \
+#     .outputMode("complete") \
+#     .format("org.elasticsearch.spark.sql") \
+#     .option("es.nodes", 'localhost') \
+#     .option("es.port", 9200) \
+#     .option("checkpointLocation", "/home/impadmin/Software/data") \
+#     .start("fraud/case").awaitTermination()
